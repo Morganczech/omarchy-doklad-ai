@@ -1,0 +1,36 @@
+// Zero-Data webhook relay for the Omarchy Doklad.ai bar plugin.
+//
+// The Worker verifies the HMAC signature of each Doklad.ai webhook, keeps only
+// "what happened to which id" for 24 hours, and hands those signals to the
+// desktop plugin. It never stores names, amounts, or any other accounting data.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "doklad-webhook-relay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-11-18",
+
+  // Reachable at https://doklad-webhook-relay.<account>.workers.dev (port 443,
+  // which is the only port Doklad.ai delivers to). To serve it from your own
+  // domain instead, add:  "routes": [{ "pattern": "hook.example.cz", "custom_domain": true }]
+  "workers_dev": true,
+  "preview_urls": false,
+
+  // Only event names, sequence numbers and rejection reasons are logged.
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
+
+  "durable_objects": {
+    "bindings": [{ "name": "SIGNALS", "class_name": "SignalStore" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["SignalStore"] }],
+
+  // Values are never stored here. `./relay-setup.sh deploy` uploads them.
+  //   WEBHOOK_SECRET  the whsec_… secret Doklad.ai shows once when the webhook is created
+  //   RELAY_TOKEN     random bearer token the desktop plugin uses to read signals
+  "secrets": {
+    "required": ["WEBHOOK_SECRET", "RELAY_TOKEN"]
+  }
+}

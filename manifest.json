@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "id": "gruut.doklad-ai",
+  "name": "Doklad.ai",
+  "version": "1.0.0",
+  "author": "Morganczech",
+  "license": "MIT",
+  "homepage": "https://github.com/Morganczech/omarchy-doklad-ai",
+  "description": "Fakturační přehledy (měsíc/kvartál/rok), DPH a cashflow, upozornění na splatnost, ARES/RPO, účetní exporty a Zero-Data webhook notifikace pro Doklad.ai.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Doklad.ai",
+    "description": "Měsíční, kvartální a roční přehled fakturací, upozornění na splatnost, ARES, rychlé koncepty faktur a účetní exporty.",
+    "category": "Productivity",
+    "aliases": [
+      "doklad",
+      "faktury",
+      "fakturacia",
+      "uctovani",
+      "ares"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "barLabelMode": "unpaid",
+      "defaultHorizon": "month",
+      "defaultVatRate": "21",
+      "openRefreshSec": 60,
+      "closedRefreshSec": 300,
+      "vatLimitCzk": 2000000,
+      "notificationsEnabled": true
+    },
+    "schema": [
+      {
+        "key": "barLabelMode",
+        "type": "enum",
+        "label": "Údaj v liště",
+        "options": [
+          "none",
+          "unpaid",
+          "month",
+          "quarter",
+          "overdue_count"
+        ],
+        "defaultValue": "unpaid"
+      },
+      {
+        "key": "defaultHorizon",
+        "type": "enum",
+        "label": "Výchozí analytické období",
+        "options": [
+          "month",
+          "quarter",
+          "year",
+          "ltm"
+        ],
+        "defaultValue": "month"
+      },
+      {
+        "key": "defaultVatRate",
+        "type": "enum",
+        "label": "Výchozí sazba DPH u nových dokladů (%)",
+        "options": [
+          "21",
+          "12",
+          "0"
+        ],
+        "defaultValue": "21"
+      },
+      {
+        "key": "openRefreshSec",
+        "type": "integer",
+        "label": "Obnova při otevřeném panelu (sekundy)",
+        "min": 15,
+        "max": 600,
+        "step": 15,
+        "defaultValue": 60
+      },
+      {
+        "key": "closedRefreshSec",
+        "type": "integer",
+        "label": "Obnova na pozadí (sekundy)",
+        "min": 60,
+        "max": 3600,
+        "step": 60,
+        "defaultValue": 300
+      },
+      {
+        "key": "vatLimitCzk",
+        "type": "integer",
+        "label": "Cíl / limit obratu za kalendářní rok (Kč, 0 = skrýt)",
+        "min": 0,
+        "max": 50000000,
+        "step": 100000,
+        "defaultValue": 2000000
+      },
+      {
+        "key": "notificationsEnabled",
+        "type": "boolean",
+        "label": "Notifikace při zaplacení / splatnosti / nové faktuře",
+        "defaultValue": true
+      }
+    ]
+  }
+}

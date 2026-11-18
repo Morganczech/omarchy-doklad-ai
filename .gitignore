@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.claude/
+.cursor/
+.DS_Store
+*.swp
+*.log
+.env
+env
+webhook-relay/node_modules/
+webhook-relay/worker-configuration.d.ts
+webhook-relay/.wrangler/
+webhook-relay/.dev.vars
+webhook-relay/package-lock.json.bak
