@@ -2,6 +2,8 @@
 
 Přehledy fakturací, DPH a cashflow přímo v liště Omarchy. Plugin mluví **česky** a **slovensky** (slovenština při jazyku shellu `sk`, jinak čeština).
 
+![Přehled pluginu Doklad.ai v Omarchy](docs/screenshot.png)
+
 ## Instalace
 
 Z GitHubu (Omarchy):
