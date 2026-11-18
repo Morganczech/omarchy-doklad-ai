@@ -31,7 +31,7 @@ Panel {
 
   FileView {
     id: manifestFile
-    path: Qt.resolvedUrl("manifest.json")
+    path: decodeURIComponent(String(Qt.resolvedUrl("manifest.json")).replace(/^file:\/\//, ""))
     blockLoading: true
     printErrors: false
   }
@@ -736,7 +736,7 @@ Panel {
           PanelHero {
             id: hero
             width: parent.width
-            title: "Doklad.ai"
+            title: root.pluginVersion !== "" ? "Doklad.ai v" + root.pluginVersion : "Doklad.ai"
             detail: Model.neutralizeMarkup(root.statusLabel, 32)
             meta: Model.neutralizeMarkup(root.heroMeta, 96)
             foreground: root.foreground
@@ -938,15 +938,12 @@ Panel {
             ctx: root
             dim: true
             width: parent.width
-            visible: root.snapshot.hasData || root.pluginVersion !== ""
+            visible: root.snapshot.hasData
             text: {
               var parts = []
-              if (root.pluginVersion !== "") parts.push("v" + root.pluginVersion)
-              if (root.snapshot.hasData) {
-                if (root.busy) parts.push(root.strings.t("footer.working"))
-                else if (root.snapshot.fetchedAt > 0) parts.push(root.strings.t("footer.updated").arg(root.ago(root.snapshot.fetchedAt)))
-                parts.push(root.strings.t("footer.keys"))
-              }
+              if (root.busy) parts.push(root.strings.t("footer.working"))
+              else if (root.snapshot.fetchedAt > 0) parts.push(root.strings.t("footer.updated").arg(root.ago(root.snapshot.fetchedAt)))
+              parts.push(root.strings.t("footer.keys"))
               return parts.join("  \u00b7  ")
             }
             font.pixelSize: Style.font.caption
