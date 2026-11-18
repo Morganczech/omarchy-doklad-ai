@@ -21,11 +21,6 @@
   "method.card": "Kartou",
   "method.other": "Inak",
 
-  "event.invoice.created": "Vystavená faktúra",
-  "event.invoice.paid": "Faktúra zaplatená",
-  "event.invoice.overdue": "Faktúra po splatnosti",
-  "event.customer.created": "Nový zákazník",
-  "event.other": "Zmena v Doklad.ai",
 
   "tab.overview": "Prehľad",
   "tab.invoices": "Faktúry",
@@ -93,7 +88,6 @@
   "overview.turnoverNear": "Blížite sa k limitu zadanému v nastavení pluginu.",
   "overview.turnoverOver": "Limit zadaný v nastavení pluginu je prekročený.",
   "overview.foreign": "Nezapočítané, chýba kurz: %1",
-  "overview.events": "Posledné zmeny",
 
   "chart.paid": "Zaplatené",
   "chart.unpaid": "Neuhradené",
@@ -213,7 +207,7 @@
   "tools.webhookTitle": "Okamžité aktualizácie (webhooky)",
   "tools.relayOff": "Nenastavené, panel sa obnovuje v intervale. Pre okamžité aktualizácie spustite:\n%1",
   "tools.relayOk": "Relay funguje. Zatiaľ neprišla žiadna udalosť.",
-  "tools.relayOkEvent": "Relay funguje. Posledná udalosť %1.",
+  "tools.relayOkEvent": "Relay funguje. Posledná synchronizácia vyvolaná relayom %1.",
   "tools.relayError": "Relay: %1",
   "tools.secretStored": "Podpisový kľúč je uložený v tomto počítači.",
   "tools.secretMissing": "Podpisový kľúč chýba. Získate ho registráciou webhooku.",
@@ -331,5 +325,10 @@
   "error.relay_tls_error": "Zabezpečené spojenie s relay sa nepodarilo overiť.",
   "error.webhook_exists": "Tento webhook je už zaregistrovaný.",
   "error.open_failed": "Nepodarilo sa to otvoriť.",
-  "error.copy_failed": "Kopírovanie do schránky sa nepodarilo."
+  "error.copy_failed": "Kopírovanie do schránky sa nepodarilo.",
+  "tools.clearLocalData": "Vymazať lokálne údaje",
+  "confirm.clearLocalData": "Vymazať lokálnu kópiu dokladov, kontaktov a stav synchronizácie? Stiahnuté súbory zostanú v počítači.",
+  "done.localDataCleared": "Lokálne údaje boli vymazané.",
+  "error.keyring_unavailable": "Systémová kľúčenka nie je dostupná alebo je zamknutá.",
+  "error.account_changed": "API kľúč sa zmenil. Načítavam údaje pre aktuálny účet."
 }

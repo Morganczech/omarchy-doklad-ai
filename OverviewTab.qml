@@ -305,44 +305,4 @@ Column {
     wrapMode: Text.WordWrap
   }
 
-  Column {
-    visible: root.snap.events.length > 0
-    width: parent.width
-    spacing: Style.space(4)
-
-    PanelSectionHeader {
-      text: root.strings.t("overview.events")
-      foreground: root.ctx.foreground
-      fontFamily: root.ctx.fontFamily
-    }
-
-    Repeater {
-      model: root.snap.events.slice(0, 4)
-
-      Item {
-        required property var modelData
-        width: parent.width
-        implicitHeight: eventText.implicitHeight
-
-        Txt {
-          id: eventText
-          ctx: root.ctx
-          anchors.left: parent.left
-          anchors.right: eventTime.left
-          anchors.rightMargin: Style.space(8)
-          text: root.strings.t("event." + modelData.event) + (modelData.number !== "" ? " \u00b7 " + modelData.number : "")
-          elide: Text.ElideRight
-        }
-
-        Txt {
-          id: eventTime
-          ctx: root.ctx
-          dim: true
-          anchors.right: parent.right
-          text: root.ctx.ago(modelData.at)
-          font.pixelSize: Style.font.caption
-        }
-      }
-    }
-  }
 }

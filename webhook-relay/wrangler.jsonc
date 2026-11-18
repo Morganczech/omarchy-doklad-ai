@@ -1,8 +1,4 @@
-// Zero-Data webhook relay for the Omarchy Doklad.ai bar plugin.
-//
-// The Worker verifies the HMAC signature of each Doklad.ai webhook, keeps only
-// "what happened to which id" for 24 hours, and hands those signals to the
-// desktop plugin. It never stores names, amounts, or any other accounting data.
+// Optional webhook relay. The Worker verifies the request body and persists only a change counter.
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "doklad-webhook-relay",
@@ -15,12 +11,7 @@
   "workers_dev": true,
   "preview_urls": false,
 
-  // Only event names, sequence numbers and rejection reasons are logged.
-  "observability": {
-    "enabled": true,
-    "logs": { "enabled": true, "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 1 }
-  },
+  "observability": { "enabled": false },
 
   "durable_objects": {
     "bindings": [{ "name": "SIGNALS", "class_name": "SignalStore" }]

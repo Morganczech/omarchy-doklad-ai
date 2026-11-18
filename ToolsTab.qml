@@ -25,13 +25,15 @@ Column {
     { key: "period", cols: 2 },
     { key: "export", cols: formats.length },
     { key: "files", cols: 2 },
-    { key: "hooks", cols: 2 }
+    { key: "hooks", cols: 2 },
+    { key: "local-data", cols: 1 }
   ]
 
   function activate(key, row, col) {
     if (key === "period") ctx.stepPeriod(col === 0 ? -1 : 1)
     else if (key === "export") exportPeriod(formats[col])
     else if (key === "files") { if (col === 0) bulkPdf(); else ctx.act("open", { target: "downloads" }, "open") }
+    else if (key === "local-data") clearLocalData()
     else if (key === "hooks") { if (col === 0) ctx.act("list-webhooks", {}, "list-webhooks"); else registerWebhook() }
   }
 
@@ -39,6 +41,7 @@ Column {
     if (key === "period") return periodRow
     if (key === "export") return exportGroup
     if (key === "files") return fileRow
+    if (key === "local-data") return clearLocalButton
     return hookRow
   }
 
@@ -55,6 +58,12 @@ Column {
     var ids = periodInvoices.slice(0, bulkLimit).map(function(invoice) { return invoice.id })
     if (ids.length === 0) { ctx.notice(strings.t("tools.noInvoices"), "info"); return }
     ctx.act("bulk-pdf", { ids: ids, label: periodLabel() }, "bulk-pdf")
+  }
+
+  function clearLocalData() {
+    if (ctx.busy) return
+    ctx.ask(strings.t("confirm.clearLocalData"), strings.t("tools.clearLocalData"),
+      function() { root.ctx.act("clear-local-data", {}, "clear-local-data") })
   }
 
   function registerWebhook() {
@@ -300,5 +309,13 @@ Column {
     text: root.strings.t("tools.webhookHint")
     font.pixelSize: Style.font.caption
     wrapMode: Text.WordWrap
+  }
+  Btn {
+    id: clearLocalButton
+    ctx: root.ctx
+    stop: "local-data"
+    text: root.strings.t("tools.clearLocalData")
+    enabled: !root.ctx.busy
+    onClicked: root.clearLocalData()
   }
 }

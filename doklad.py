@@ -10,6 +10,7 @@ Commands:
   action <name>        (JSON payload on one stdin line)
   verify-auth
   set-secret <NAME>    (value on one stdin line; empty removes it)
+  configure-api-key <keyring|file> (API key on stdin; empty migrates the current key)
 """
 
 import argparse
@@ -51,7 +52,6 @@ MAX_UI_INVOICES = 400
 MAX_UI_CUSTOMERS = 300
 MAX_ITEMS = 50
 MAX_BULK_IDS = 200
-MAX_EVENTS = 30
 MAX_NOTIFICATIONS = 4
 
 API_TIMEOUT = 20
@@ -94,7 +94,6 @@ ICO_RE = re.compile(r"^\d{8}$")
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+\-]{1,64}@[A-Za-z0-9.\-]{1,190}\.[A-Za-z]{2,24}$")
 HOST_RE = re.compile(r"^(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?)+$")
 RELAY_PREFIX_RE = re.compile(r"^(?:/[A-Za-z0-9._~\-]{1,64}){0,4}$")
-EVENT_NAME_RE = re.compile(r"^[a-z_]{1,32}\.[a-z_]{1,32}$")
 LABEL_RE = re.compile(r"^[A-Za-z0-9_\-]{1,40}$")
 BIDI_RE = re.compile("[\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]")
 
@@ -376,18 +375,40 @@ def parse_env_text(text):
     return values
 
 
-def load_secrets(paths, environ):
-    """Process environment first, then the private 0600 env file."""
-    secrets = {}
-    file_values = {}
+def read_env_values(paths):
     raw = read_private_file(paths.env_file, MAX_ENV_BYTES, require_private_mode=True)
-    if raw is not None:
-        try:
-            file_values = parse_env_text(raw.decode("utf-8"))
-        except UnicodeDecodeError:
-            raise DokladError("invalid_env")
+    try:
+        return parse_env_text(raw.decode("utf-8")) if raw is not None else {}
+    except UnicodeDecodeError:
+        raise DokladError("invalid_env")
+
+
+def keyring_call(operation, value=None):
+    attributes = ["application", "gruut.doklad-ai", "credential", "api-key"]
+    args = ["/usr/bin/secret-tool", operation]
+    if operation == "store":
+        args.append("--label=Doklad.ai – API klíč")
+    try:
+        result = subprocess.run(
+            args + attributes, input=value, capture_output=True, text=True,
+            timeout=15, check=True, env=child_environ(),
+        )
+        return result.stdout.strip()
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        raise DokladError("keyring_unavailable")
+
+
+def load_secrets(paths, environ):
+    """Read the API key from the configured backend and relay secrets from the private env."""
+    secrets = {}
+    file_values = read_env_values(paths)
     for key in SECRET_KEYS:
-        value = environ.get(key) or file_values.get(key) or ""
+        if key == "DOKLAD_API_KEY" and file_values.get("DOKLAD_KEYRING") == "1":
+            value = keyring_call("lookup")
+            if not value:
+                raise DokladError("keyring_unavailable")
+        else:
+            value = environ.get(key) or file_values.get(key) or ""
         value = value.strip()
         if value and not SECRET_VALUE_RE.fullmatch(value):
             raise DokladError("invalid_env", key)
@@ -406,17 +427,19 @@ def update_env_file(paths, updates):
     if not lines:
         lines = ["# Private credentials for gruut.doklad-ai (mode 0600)"]
     pending = dict(updates)
+    seen = set()
     out = []
     for line in lines:
         match = ENV_LINE_RE.match(line.strip())
-        if match and match.group(1) in pending:
-            value = pending.pop(match.group(1))
-            if value:
-                out.append("%s=%s" % (match.group(1), value))
+        key = match.group(1) if match else None
+        if key in pending:
+            if key not in seen and pending[key]:
+                out.append("%s=%s" % (key, pending[key]))
+            seen.add(key)
         else:
             out.append(line)
     for key, value in pending.items():
-        if value:
+        if key not in seen and value:
             out.append("%s=%s" % (key, value))
     write_private_file(paths.env_file, ("\n".join(out) + "\n").encode("utf-8"))
 
@@ -435,6 +458,27 @@ def store_secret(paths, name, value):
         value = value.rstrip("/")
     update_env_file(paths, {name: value})
     return bool(value)
+
+
+def configure_api_key(ctx, value, storage):
+    new_value = bool(value)
+    current = read_env_values(ctx.paths)
+    in_keyring = current.get("DOKLAD_KEYRING") == "1"
+    if not value:
+        value = keyring_call("lookup") if in_keyring else current.get("DOKLAD_API_KEY") or ctx.environ.get("DOKLAD_API_KEY", "")
+    if not value or not SECRET_VALUE_RE.fullmatch(value):
+        raise DokladError("invalid_env", "DOKLAD_API_KEY")
+    if storage == "keyring":
+        if not in_keyring or new_value:
+            keyring_call("store", value)
+            if keyring_call("lookup") != value:
+                raise DokladError("keyring_unavailable")
+        update_env_file(ctx.paths, {"DOKLAD_API_KEY": "", "DOKLAD_KEYRING": "1"})
+    else:
+        update_env_file(ctx.paths, {"DOKLAD_API_KEY": value, "DOKLAD_KEYRING": ""})
+        if in_keyring:
+            keyring_call("clear")
+    return True
 
 
 def parse_relay_url(value):
@@ -888,9 +932,16 @@ def fetch_dataset(client, now):
     }
 
 
-def load_cache(paths):
+def key_fingerprint(key):
+    return hashlib.sha256(("omarchy-doklad-ai/cache:" + key).encode("utf-8")).hexdigest() if key else ""
+
+
+def load_cache(paths, account):
+    if not account:
+        return None
     cache = read_json_file(paths.cache_file, MAX_CACHE_BYTES)
-    if not isinstance(cache, dict) or cache.get("version") != CACHE_VERSION:
+    if (not isinstance(cache, dict) or cache.get("version") != CACHE_VERSION
+            or cache.get("account") != account):
         return None
     for key in ("invoices", "expenses", "customers", "overdueIds"):
         if not isinstance(cache.get(key), list):
@@ -910,14 +961,16 @@ def default_state():
         "relayCursor": 0,
         "relayError": "",
         "relayCheckedAt": 0,
-        "events": [],
+        "relayChangedAt": 0,
     }
 
 
-def load_state(paths):
+def load_state(paths, account):
     state = default_state()
+    state["account"] = account
     raw = read_json_file(paths.state_file, MAX_STATE_BYTES)
-    if not isinstance(raw, dict) or raw.get("version") != STATE_VERSION:
+    if (not account or not isinstance(raw, dict) or raw.get("version") != STATE_VERSION
+            or raw.get("account") != account):
         return state
     state["baseline"] = raw.get("baseline") is True
     if isinstance(raw.get("known"), dict):
@@ -937,11 +990,8 @@ def load_state(paths):
     state["relayError"] = clean_text(raw.get("relayError"), 40)
     if isinstance(raw.get("relayCheckedAt"), int):
         state["relayCheckedAt"] = raw["relayCheckedAt"]
-    if isinstance(raw.get("events"), list):
-        for item in raw["events"][-MAX_EVENTS:]:
-            event = normalize_relay_event(item)
-            if event:
-                state["events"].append(event)
+    if type(raw.get("relayChangedAt")) is int:
+        state["relayChangedAt"] = raw["relayChangedAt"]
     return state
 
 
@@ -1067,10 +1117,11 @@ def notify_markup_safe(text):
 def build_notifications(changes, strings, privacy, lang):
     messages = []
     for kind, invoice in changes[:MAX_NOTIFICATIONS]:
-        parts = [invoice["number"] or "#%d" % invoice["id"]]
-        if invoice["customerName"]:
-            parts.append(invoice["customerName"])
+        parts = []
         if not privacy:
+            parts.append(invoice["number"] or "#%d" % invoice["id"])
+            if invoice["customerName"]:
+                parts.append(invoice["customerName"])
             parts.append(format_money_text(invoice["total"], invoice["currency"], lang))
         messages.append((kind, strings["notify." + kind], notify_markup_safe(" \u00b7 ".join(parts))))
     extra = len(changes) - MAX_NOTIFICATIONS
@@ -1083,11 +1134,34 @@ def child_environ():
     return {key: value for key, value in os.environ.items() if not key.startswith("DOKLAD_")}
 
 
+def notification_method():
+    try:
+        import dbus
+    except ImportError:
+        return None, ()
+    try:
+        bus = dbus.SessionBus()
+        notifications = bus.get_object("org.freedesktop.Notifications", "/org/freedesktop/Notifications",
+                                       introspect=False)
+        return notifications.get_dbus_method("Notify", "org.freedesktop.Notifications"), dbus.DBusException
+    except dbus.DBusException:
+        return None, ()
+
+
 def send_notifications(messages):
+    notify, bus_error = notification_method()
+
     for _kind, title, body in messages:
+        if notify is not None:
+            try:
+                notify("Doklad.ai", 0, "", title, body, [], {}, -1, signature="susssasa{sv}i", timeout=5)
+                continue
+            except bus_error:
+                notify = None
+        # Without D-Bus bindings, pass only the generic title to notify-send.
         try:
             subprocess.run(
-                ["/usr/bin/notify-send", "-a", "Doklad.ai", "--", title, body],
+                ["/usr/bin/notify-send", "-a", "Doklad.ai", "--", title],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 timeout=5, check=False, env=child_environ(),
             )
@@ -1096,85 +1170,49 @@ def send_notifications(messages):
 
 
 # --------------------------------------------------------------------------
-# Webhook relay client (signals only: event name + resource id)
+# Webhook relay client
 # --------------------------------------------------------------------------
 
-def normalize_relay_event(item):
-    if not isinstance(item, dict):
-        return None
-    name = item.get("event")
-    seq = item.get("seq")
-    at = first_of(item, "at", "receivedAt")
-    if not isinstance(name, str) or not EVENT_NAME_RE.fullmatch(name):
-        return None
-    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
-        return None
-    if isinstance(at, bool) or not isinstance(at, (int, float)) or at < 0:
-        return None
-    if at > 10 ** 11:  # milliseconds
-        at = at / 1000
-    return {"seq": seq, "event": name, "resourceId": to_int_id(item.get("resourceId")), "at": int(at)}
-
-
-def relay_request(transport, prefix, token, cursor):
+def relay_fetch(transport, prefix, token, cursor):
     target = "%s/events?%s" % (prefix, urlencode({"after": cursor}))
     headers = {"Accept": "application/json", "User-Agent": USER_AGENT, "Authorization": "Bearer " + token}
     status, _, data = transport("GET", target, None, headers, 256 * 1024)
     if status in (401, 403):
         raise DokladError("relay_unauthorized")
     if status == 503:
-        raise DokladError("relay_not_ready")  # Worker deployed without its secrets
+        raise DokladError("relay_not_ready")
     if status != 200:
         raise DokladError("relay_error")
     try:
         payload = json.loads(data.decode("utf-8"))
     except (ValueError, UnicodeDecodeError):
         raise DokladError("relay_error")
-    rows = payload.get("events") if isinstance(payload, dict) else None
-    if not isinstance(rows, list):
+    head = first_of(payload, "head", "cursor") if isinstance(payload, dict) else None
+    if type(head) is not int or not 0 <= head <= 2 ** 53 - 1:
         raise DokladError("relay_error")
-    head = payload.get("head")
-    if isinstance(head, bool) or not isinstance(head, int) or head < 0:
-        head = None
-    return rows, head
-
-
-def relay_fetch(transport, prefix, token, cursor):
-    """Returns (new events, next cursor). Sequence numbers only ever grow on one relay."""
-    rows, head = relay_request(transport, prefix, token, cursor)
-    if head is not None and head < cursor:
-        # The relay was redeployed from scratch and counts from 1 again; start over once.
-        cursor = 0
-        rows, head = relay_request(transport, prefix, token, cursor)
-    events = [event for event in (normalize_relay_event(row) for row in rows[:200]) if event and event["seq"] > cursor]
-    events.sort(key=lambda event: event["seq"])
-    next_cursor = max([cursor] + [event["seq"] for event in events])
-    return events, next_cursor
+    return head
 
 
 def poll_relay(secrets, state, now, transport_factory):
-    """Pull pending signals. Returns the number of new events; failures are recorded, never fatal."""
+    """Read the counter. On failure keep the last synced counter."""
     url, token = secrets.get("DOKLAD_RELAY_URL", ""), secrets.get("DOKLAD_RELAY_TOKEN", "")
     if not url or not token:
-        return 0
+        return state["relayCursor"]
     state["relayCheckedAt"] = int(now)
     try:
         host, port, prefix = parse_relay_url(url)
         transport = transport_factory(host, port)
         try:
-            events, cursor = relay_fetch(transport, prefix, token, state["relayCursor"])
+            cursor = relay_fetch(transport, prefix, token, state["relayCursor"])
         finally:
             close = getattr(transport, "close", None)
             if close:
                 close()
     except DokladError as exc:
         state["relayError"] = exc.code if exc.code.startswith("relay_") else "relay_" + exc.code
-        return 0
+        return state["relayCursor"]
     state["relayError"] = ""
-    state["relayCursor"] = cursor
-    if events:
-        state["events"] = (state["events"] + events)[-MAX_EVENTS:]
-    return len(events)
+    return cursor
 
 
 # --------------------------------------------------------------------------
@@ -1358,7 +1396,7 @@ def period_summary(horizon, offset, invoices, expenses, base, today, overdue_ids
     }, period, totals
 
 
-def build_snapshot(cache, state, options, today):
+def build_snapshot(cache, options, today):
     """Pure projection of cached data into everything the panel renders."""
     overdue_ids = frozenset(item for item in cache["overdueIds"] if isinstance(item, int))
     invoices = [item for item in (hydrate_invoice(row) for row in cache["invoices"]) if item]
@@ -1458,11 +1496,6 @@ def build_snapshot(cache, state, options, today):
     def totals_for(bounds):
         return aggregate(invoices, expenses, bounds["start"], bounds["end"], base, today, overdue_ids)
 
-    numbers = {invoice["id"]: invoice["number"] for invoice in invoices}
-    events = [{"event": event["event"], "resourceId": event["resourceId"], "at": event["at"],
-               "number": numbers.get(event["resourceId"], "") if event["event"].startswith("invoice.") else ""}
-              for event in reversed(state["events"][-20:])]
-
     return {
         "baseCurrency": base,
         "bar": {
@@ -1487,7 +1520,6 @@ def build_snapshot(cache, state, options, today):
         "customerCount": len(customers),
         "expensesAvailable": cache.get("expensesAvailable") is not False,
         "truncated": cache.get("truncated") is True,
-        "events": events,
     }
 
 
@@ -1514,6 +1546,10 @@ class Context:
         if self._secrets is None:
             self._secrets = load_secrets(self.paths, self.environ)
         return self._secrets
+
+    @property
+    def account(self):
+        return key_fingerprint(self.secrets["DOKLAD_API_KEY"])
 
     def client(self, require_key=True):
         key = self.secrets["DOKLAD_API_KEY"]
@@ -1553,18 +1589,27 @@ def run_snapshot(ctx, options):
 
     relay_configured = bool(secrets["DOKLAD_RELAY_URL"] and secrets["DOKLAD_RELAY_TOKEN"])
     error, detail, messages = "", "", []
+    if not ctx.account:
+        return empty_snapshot("unconfigured")
     with StateLock(ctx.paths) as lock:
-        state = load_state(ctx.paths)
-        cache = load_cache(ctx.paths)
+        if not lock.acquired:
+            return empty_snapshot("error", "storage_unavailable")
+        state = load_state(ctx.paths, ctx.account)
+        cache = load_cache(ctx.paths, ctx.account)
         # --cached re-projects stored data (period switches) without touching the network.
-        if lock.acquired and not (options["cached"] and cache is not None):
-            new_events = poll_relay(secrets, state, ctx.now, ctx.relay_transport_factory)
+        if not (options["cached"] and cache is not None):
+            cursor = poll_relay(secrets, state, ctx.now, ctx.relay_transport_factory)
+            relay_changed = cursor != state["relayCursor"]
             age = ctx.now - cache["fetchedAt"] if cache else None
             stale = cache is None or age is None or age < 0 or age > options["max_age"]
-            if secrets["DOKLAD_API_KEY"] and (options["force"] or stale or new_events):
+            if options["force"] or stale or relay_changed:
                 try:
                     cache = fetch_dataset(ctx.client(), ctx.now)
+                    cache["account"] = ctx.account
                     write_json_file(ctx.paths.cache_file, cache)
+                    if relay_changed:
+                        state["relayCursor"] = cursor
+                        state["relayChangedAt"] = int(ctx.now)
                     hydrated = [item for item in (hydrate_invoice(row) for row in cache["invoices"]) if item]
                     known, changes = diff_invoices(
                         state["known"], state["baseline"], hydrated, ctx.today, state["selfTouched"],
@@ -1577,6 +1622,9 @@ def run_snapshot(ctx, options):
                         messages = build_notifications(changes, strings, options["privacy"], options["lang"])
                 except DokladError as exc:
                     error, detail = exc.code, exc.detail
+                    if error == "unauthorized":
+                        cache = None
+                        remove_local_files(ctx.paths.cache_file)
             try:
                 write_json_file(ctx.paths.state_file, state)
             except DokladError:
@@ -1589,23 +1637,17 @@ def run_snapshot(ctx, options):
         "ok": relay_configured and not state["relayError"],
         "error": state["relayError"] if relay_configured else "",
         "checkedAt": state["relayCheckedAt"],
-        "lastEventAt": state["events"][-1]["at"] if state["events"] else 0,
+        "lastEventAt": state["relayChangedAt"],
         "webhookSecretStored": bool(secrets["DOKLAD_WEBHOOK_SECRET"]),
     }
-    if not secrets["DOKLAD_API_KEY"]:
-        result = empty_snapshot("unconfigured")
-        result["relay"] = relay
-        return result
     if cache is None:
         status = "unauthorized" if error == "unauthorized" else ("offline" if error in ("offline", "timeout") else "error")
         result = empty_snapshot(status, error or "no_data", detail)
         result["relay"] = relay
         return result
 
-    snapshot = build_snapshot(cache, state, options, ctx.today)
-    if error == "unauthorized":
-        status = "unauthorized"
-    elif error in ("offline", "timeout"):
+    snapshot = build_snapshot(cache, options, ctx.today)
+    if error in ("offline", "timeout"):
         status = "offline"
     elif error:
         status = "error"
@@ -1617,6 +1659,7 @@ def run_snapshot(ctx, options):
         "error": error,
         "errorDetail": detail,
         "hasData": True,
+        "account": ctx.account,
         "stale": bool(error),
         "fetchedAt": cache["fetchedAt"],
         "today": iso(ctx.today),
@@ -1798,11 +1841,41 @@ def save_download(ctx, filename, data):
 # Actions
 # --------------------------------------------------------------------------
 
+def remove_local_files(*paths):
+    for path in paths:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            raise DokladError("storage_unavailable")
+
+
+def invalidate_cached_account(ctx):
+    ensure_private_dir(ctx.paths.state_dir)
+    with StateLock(ctx.paths) as lock:
+        if not lock.acquired:
+            raise DokladError("storage_unavailable")
+        if load_cache(ctx.paths, ctx.account) is not None:
+            remove_local_files(ctx.paths.cache_file)
+
+
+def action_clear_local_data(ctx, payload):
+    ensure_private_dir(ctx.paths.state_dir)
+    with StateLock(ctx.paths) as lock:
+        if not lock.acquired:
+            raise DokladError("storage_unavailable")
+        remove_local_files(ctx.paths.cache_file, ctx.paths.state_file)
+    return {}
+
+
 def with_state(ctx, mutate):
     try:
         ensure_private_dir(ctx.paths.state_dir)
-        with StateLock(ctx.paths, wait_seconds=5):
-            state = load_state(ctx.paths)
+        with StateLock(ctx.paths, wait_seconds=5) as lock:
+            if not lock.acquired:
+                return
+            state = load_state(ctx.paths, ctx.account)
             mutate(state)
             write_json_file(ctx.paths.state_file, state)
     except DokladError:
@@ -1810,7 +1883,7 @@ def with_state(ctx, mutate):
 
 
 def cached_customers(ctx):
-    cache = load_cache(ctx.paths)
+    cache = load_cache(ctx.paths, ctx.account)
     return [item for item in (normalize_customer(row) for row in (cache or {}).get("customers", [])) if item]
 
 
@@ -1959,7 +2032,7 @@ def action_create_invoice(ctx, payload):
     body = build_invoice_payload(payload, draft)
     fingerprint = invoice_fingerprint(body)
     if payload.get("force") is not True:
-        state = load_state(ctx.paths)
+        state = load_state(ctx.paths, ctx.account)
         for entry in state["recentCreates"]:
             if entry["fp"] == fingerprint and ctx.now - entry["at"] < DUPLICATE_WINDOW:
                 raise DokladError("duplicate_recent")
@@ -1972,8 +2045,8 @@ def action_create_invoice(ctx, payload):
         # The API has no idempotency key: verify before anyone retries.
         try:
             found = find_created_invoice(client, body, ctx.now)
-        except DokladError:
-            raise DokladError("create_uncertain")
+        except DokladError as verification_error:
+            raise DokladError("create_uncertain", status=verification_error.status)
         if found is None:
             raise DokladError("create_not_found" if exc.code in ("timeout", "offline") else exc.code, exc.detail)
         headers, response = {}, {"id": found["id"], "invoiceNumber": found["number"]}
@@ -2223,6 +2296,7 @@ ACTIONS = {
     "register-webhook": action_register_webhook,
     "open": action_open,
     "copy": action_copy,
+    "clear-local-data": action_clear_local_data,
 }
 
 
@@ -2233,9 +2307,18 @@ def run_action(ctx, name, payload):
     if not isinstance(payload, dict):
         return {"ok": False, "action": name, "error": "invalid_input", "detail": ""}
     try:
+        if "expectedAccount" in payload and payload["expectedAccount"] != ctx.account:
+            raise DokladError("account_changed")
         result = handler(ctx, payload) or {}
     except DokladError as exc:
-        return {"ok": False, "action": name, "error": exc.code, "detail": exc.detail}
+        result = {"ok": False, "action": name, "error": exc.code, "detail": exc.detail}
+        if exc.code == "unauthorized" or exc.status == 401:
+            result["authRejected"] = True
+            try:
+                invalidate_cached_account(ctx)
+            except DokladError:
+                result["detail"] = "storage_unavailable"
+        return result
     result.update({"ok": True, "action": name})
     return result
 
@@ -2277,6 +2360,8 @@ def parse_args(argv):
     commands.add_parser("verify-auth")
     secret = commands.add_parser("set-secret")
     secret.add_argument("name", choices=SECRET_KEYS)
+    api_key = commands.add_parser("configure-api-key")
+    api_key.add_argument("storage", choices=("keyring", "file"))
     return parser.parse_args(argv)
 
 
@@ -2298,20 +2383,26 @@ def verify_auth(ctx):
     try:
         ctx.client().get("/api/invoices", {"limit": 1})
     except DokladError as exc:
+        if exc.code == "unauthorized":
+            try:
+                invalidate_cached_account(ctx)
+            except DokladError:
+                exc = DokladError("unauthorized", "storage_unavailable")
         sys.stderr.write("Doklad.ai: %s%s\n" % (exc.code, (" (" + exc.detail + ")") if exc.detail else ""))
         return 1
     sys.stdout.write("Doklad.ai: OK\n")
     return 0
 
 
-def set_secret(ctx, name):
+def set_secret(ctx, name, storage=None):
     """Reads the value from stdin (never argv) and stores it in the private env file."""
     try:
         line = sys.stdin.buffer.readline(MAX_ENV_BYTES + 1)
         if len(line) > MAX_ENV_BYTES:
             raise DokladError("invalid_env", name)
         try:
-            stored = store_secret(ctx.paths, name, line.decode("utf-8"))
+            value = line.decode("utf-8").strip()
+            stored = configure_api_key(ctx, value, storage) if storage else store_secret(ctx.paths, name, value)
         except UnicodeDecodeError:
             raise DokladError("invalid_env", name)
     except DokladError as exc:
@@ -2329,6 +2420,8 @@ def main(argv=None):
             return verify_auth(ctx)
         if args.command == "set-secret":
             return set_secret(ctx, args.name)
+        if args.command == "configure-api-key":
+            return set_secret(ctx, "DOKLAD_API_KEY", args.storage)
         if args.command == "snapshot":
             emit(run_snapshot(ctx, snapshot_options(args)))
             return 0

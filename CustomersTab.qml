@@ -56,6 +56,12 @@ Column {
     return moreButton
   }
 
+  function resetView() {
+    company = null
+    search.text = ""
+    ico.text = ""
+  }
+
   function focusSearch() {
     search.edit()
   }

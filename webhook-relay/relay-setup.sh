@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Deploys the Zero-Data webhook relay to your Cloudflare account and wires it to
+# Deploys the webhook relay to your Cloudflare account and wires it to
 # the Doklad.ai bar plugin. Secrets travel through stdin or a private temporary
 # file only, never through command-line arguments.
 #

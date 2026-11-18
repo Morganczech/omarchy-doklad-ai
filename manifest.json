@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "gruut.doklad-ai",
   "name": "Doklad.ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Morganczech",
   "license": "MIT",
   "homepage": "https://github.com/Morganczech/omarchy-doklad-ai",
-  "description": "Fakturační přehledy (měsíc/kvartál/rok), DPH a cashflow, upozornění na splatnost, ARES/RPO, účetní exporty a Zero-Data webhook notifikace pro Doklad.ai.",
+  "description": "Fakturační přehledy (měsíc/kvartál/rok), DPH a cashflow, upozornění na splatnost, ARES/RPO, účetní exporty a webhook notifikace pro Doklad.ai.",
   "kinds": [
     "bar-widget"
   ],

@@ -11,7 +11,7 @@ var FILTERS = ["all", "unpaid", "overdue", "paid", "draft"]
 var STATUSES = ["ready", "unconfigured", "misconfigured", "unauthorized", "offline", "error"]
 
 var KNOWN_ERRORS = {
-  unconfigured: 1, insecure_env: 1, invalid_env: 1, storage_unsafe: 1, storage_unavailable: 1,
+  unconfigured: 1, insecure_env: 1, keyring_unavailable: 1, account_changed: 1, invalid_env: 1, storage_unsafe: 1, storage_unavailable: 1,
   storage_too_large: 1, unauthorized: 1, forbidden: 1, not_found: 1, conflict: 1, validation: 1,
   rate_limited: 1, service_unavailable: 1, server_error: 1, offline: 1, timeout: 1, tls_error: 1,
   response_too_large: 1, bad_response: 1, invalid_input: 1, invalid_date: 1, invalid_amount: 1,
@@ -22,7 +22,6 @@ var KNOWN_ERRORS = {
   no_data: 1, busy: 1
 }
 
-var KNOWN_EVENTS = { "invoice.created": 1, "invoice.paid": 1, "invoice.overdue": 1, "customer.created": 1 }
 
 // ---- Text safety ----------------------------------------------------------
 
@@ -84,7 +83,7 @@ function emptySnapshot(status) {
     chart: [],
     turnover: { year: 0, yearToDate: 0, last12Months: 0, limit: 0 },
     invoices: [], invoiceCounts: { all: 0, unpaid: 0, overdue: 0, paid: 0, draft: 0 },
-    customers: [], customerCount: 0, expensesAvailable: true, truncated: false, events: [],
+    customers: [], customerCount: 0, expensesAvailable: true, truncated: false, account: "",
     relay: { configured: false, ok: false, error: "", checkedAt: 0, lastEventAt: 0, webhookSecretStored: false }
   }
 }
@@ -185,6 +184,7 @@ function parseSnapshot(text) {
   if (raw.hasData !== true) return result
 
   result.hasData = true
+  result.account = plainText(raw.account, 64)
   result.stale = raw.stale === true
   result.fetchedAt = count(raw.fetchedAt)
   result.today = isoDate(raw.today)
@@ -220,14 +220,6 @@ function parseSnapshot(text) {
   result.customerCount = count(raw.customerCount)
   result.expensesAvailable = raw.expensesAvailable !== false
   result.truncated = raw.truncated === true
-  result.events = rows(raw.events, 20).map(function(item) {
-    var entry = obj(item)
-    var name = plainText(entry.event, 40)
-    return {
-      event: KNOWN_EVENTS[name] ? name : "other", resourceId: idOf(entry.resourceId),
-      at: count(entry.at), number: plainText(entry.number, 40)
-    }
-  })
   return result
 }
 
@@ -580,7 +572,7 @@ function validEmail(text) {
 if (typeof module !== "undefined") {
   module.exports = {
     HORIZONS: HORIZONS, STATES: STATES, KINDS: KINDS, FILTERS: FILTERS, STATUSES: STATUSES,
-    KNOWN_ERRORS: KNOWN_ERRORS, KNOWN_EVENTS: KNOWN_EVENTS,
+    KNOWN_ERRORS: KNOWN_ERRORS,
     plainText: plainText, neutralizeMarkup: neutralizeMarkup, parseSnapshot: parseSnapshot,
     emptySnapshot: emptySnapshot, parseActionResult: parseActionResult, parseDetail: parseDetail,
     parseCompany: parseCompany, parseWebhooks: parseWebhooks, errorKey: errorKey,

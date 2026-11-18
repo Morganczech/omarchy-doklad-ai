@@ -26,6 +26,7 @@ Item {
   property string busyAction: ""
   property string busyTag: ""
 
+  signal accountViewReset()
   signal actionFinished(string tag, var result)
 
   readonly property string helperPath: decodeURIComponent(String(Qt.resolvedUrl("doklad.py")).replace(/^file:\/\//, ""))
@@ -33,6 +34,20 @@ Item {
 
   property string _queuedMode: ""
   property string _runningPeriod: ""
+  property int _snapshotGeneration: 0
+  property int _runningGeneration: 0
+
+  function replaceSnapshot(next) {
+    if (snapshot.hasData && (!next.hasData || snapshot.account !== next.account))
+      accountViewReset()
+    snapshot = next
+  }
+
+  function invalidateSnapshot(status) {
+    _snapshotGeneration++
+    _queuedMode = ""
+    replaceSnapshot(Model.emptySnapshot(status))
+  }
 
   function setting(name, fallback) {
     var value = settings ? settings[name] : undefined
@@ -57,6 +72,7 @@ Item {
   // mode: "poll" (use the cache while it is fresh), "force" (always fetch),
   // "cached" (only re-project what is stored; used when the period changes).
   function startSnapshot(mode) {
+    if (busyAction === "clear-local-data") return
     if (probeProc.running) {
       if (modeRank(mode) > modeRank(_queuedMode)) _queuedMode = mode
       return
@@ -74,6 +90,7 @@ Item {
     if (mode === "cached") args.push("--cached")
     if (notificationsEnabled) args.push("--notify")
     if (privacy) args.push("--privacy")
+    _runningGeneration = _snapshotGeneration
     _runningPeriod = horizon + ":" + offset
     probeProc.command = args
     probeProc.running = true
@@ -96,7 +113,11 @@ Item {
     if (actionProc.running) return false
     busyAction = name
     busyTag = tag || name
-    actionProc.payload = JSON.stringify(payload || {})
+    var request = Object.assign({}, payload || {})
+    if (root.snapshot.account !== "" && name !== "clear-local-data")
+      request.expectedAccount = root.snapshot.account
+    actionProc.account = request.expectedAccount || ""
+    actionProc.payload = JSON.stringify(request)
     actionProc.command = helperBase.concat(["action", name])
     actionProc.running = true
     return true
@@ -120,15 +141,14 @@ Item {
       var parsed = Model.parseSnapshot(probeStdout.text)
       var samePeriod = root._runningPeriod === root.horizon + ":" + root.offset
       var broken = exitCode !== 0 || (parsed.status === "error" && parsed.error === "" && !parsed.hasData)
-      if (broken) {
-        // The helper crashed or printed nothing usable: keep what is on screen.
-        if (!root.snapshot.hasData) {
+      if (root._runningGeneration === root._snapshotGeneration) {
+        if (broken) {
           var failed = Model.emptySnapshot("error")
           failed.error = "internal"
-          root.snapshot = failed
+          root.replaceSnapshot(failed)
+        } else if (samePeriod || !parsed.hasData || parsed.account !== root.snapshot.account) {
+          root.replaceSnapshot(parsed)
         }
-      } else if (samePeriod || !parsed.hasData) {
-        root.snapshot = parsed
       }
       var queued = root._queuedMode
       root._queuedMode = ""
@@ -140,6 +160,7 @@ Item {
   Process {
     id: actionProc
     property string payload: "{}"
+    property string account: ""
     stdinEnabled: true
     stdout: StdioCollector {
       id: actionStdout
@@ -154,7 +175,15 @@ Item {
       var tag = root.busyTag
       root.busyAction = ""
       root.busyTag = ""
-      if (result.ok && result.refresh === true) root.forceRefresh()
+      if (tag === "clear-local-data" && result.ok) {
+        root.invalidateSnapshot("loading")
+      } else if (result.authRejected === true || result.error === "account_changed") {
+        root.invalidateSnapshot(result.authRejected === true ? "unauthorized" : "loading")
+        root.forceRefresh()
+      } else {
+        if (account !== "" && account !== root.snapshot.account) return
+        if (result.ok && result.refresh === true) root.forceRefresh()
+      }
       root.actionFinished(tag, result)
     }
   }

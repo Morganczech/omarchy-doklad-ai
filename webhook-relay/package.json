@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "Zero-Data webhook relay for the Omarchy Doklad.ai bar plugin (Cloudflare Worker + Durable Object).",
+  "description": "webhook relay for the Omarchy Doklad.ai bar plugin (Cloudflare Worker + Durable Object).",
   "license": "MIT",
   "engines": {
     "node": ">=22.12.0"

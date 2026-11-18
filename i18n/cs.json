@@ -21,11 +21,6 @@
   "method.card": "Kartou",
   "method.other": "Jinak",
 
-  "event.invoice.created": "Vystavena faktura",
-  "event.invoice.paid": "Faktura zaplacena",
-  "event.invoice.overdue": "Faktura po splatnosti",
-  "event.customer.created": "Nový zákazník",
-  "event.other": "Změna v Doklad.ai",
 
   "tab.overview": "Přehled",
   "tab.invoices": "Faktury",
@@ -93,7 +88,6 @@
   "overview.turnoverNear": "Blížíte se limitu zadanému v nastavení pluginu.",
   "overview.turnoverOver": "Limit zadaný v nastavení pluginu je překročen.",
   "overview.foreign": "Nezapočteno, chybí kurz: %1",
-  "overview.events": "Poslední změny",
 
   "chart.paid": "Zaplaceno",
   "chart.unpaid": "Neuhrazeno",
@@ -213,7 +207,7 @@
   "tools.webhookTitle": "Okamžité aktualizace (webhooky)",
   "tools.relayOff": "Nenastaveno, panel se obnovuje v intervalu. Pro okamžité aktualizace spusťte:\n%1",
   "tools.relayOk": "Relay funguje. Zatím nepřišla žádná událost.",
-  "tools.relayOkEvent": "Relay funguje. Poslední událost %1.",
+  "tools.relayOkEvent": "Relay funguje. Poslední synchronizace vyvolaná relayem %1.",
   "tools.relayError": "Relay: %1",
   "tools.secretStored": "Podpisový klíč je uložený v tomto počítači.",
   "tools.secretMissing": "Podpisový klíč chybí. Získáte ho registrací webhooku.",
@@ -331,5 +325,10 @@
   "error.relay_tls_error": "Zabezpečené spojení s relay se nepodařilo ověřit.",
   "error.webhook_exists": "Tento webhook už je zaregistrovaný.",
   "error.open_failed": "Nepodařilo se to otevřít.",
-  "error.copy_failed": "Kopírování do schránky se nepovedlo."
+  "error.copy_failed": "Kopírování do schránky se nepovedlo.",
+  "tools.clearLocalData": "Vymazat lokální data",
+  "confirm.clearLocalData": "Vymazat lokální kopii dokladů, kontaktů a stav synchronizace? Stažené soubory zůstanou v počítači.",
+  "done.localDataCleared": "Lokální data byla vymazána.",
+  "error.keyring_unavailable": "Systémová klíčenka není dostupná nebo je zamčená.",
+  "error.account_changed": "API klíč se změnil. Načítám data pro aktuální účet."
 }

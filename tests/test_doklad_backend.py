@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 from decimal import Decimal
+from unittest.mock import patch
 from urllib.parse import parse_qsl
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
@@ -415,7 +416,7 @@ class PeriodTests(unittest.TestCase):
 class AnalyticsTests(unittest.TestCase):
     def snapshot(self, **overrides):
         cache = cache_from(sample_invoices(), sample_expenses(), sample_customers())
-        return doklad.build_snapshot(cache, doklad.default_state(), options(**overrides), TODAY)
+        return doklad.build_snapshot(cache, options(**overrides), TODAY)
 
     def test_monthly_totals(self):
         period = self.snapshot()["period"]
@@ -506,7 +507,7 @@ class AnalyticsTests(unittest.TestCase):
         invoices = [api_invoice(index, "100.00", status="paid", issue="2026-06-01") for index in range(1, 700)]
         invoices.append(api_invoice(9000, "100.00", issue="2019-01-01", due="2019-02-01"))
         cache = cache_from(invoices)
-        rows = doklad.build_snapshot(cache, doklad.default_state(), options(), TODAY)["invoices"]
+        rows = doklad.build_snapshot(cache, options(), TODAY)["invoices"]
         self.assertEqual(len(rows), doklad.MAX_UI_INVOICES)
         self.assertIn(9000, [row["id"] for row in rows])
 
@@ -545,12 +546,19 @@ class DiffTests(unittest.TestCase):
         self.assertEqual(self.run_diff(before, after, {"2": NOW - 30}), [])
         self.assertEqual(len(self.run_diff(before, after, {"2": NOW - doklad.SELF_TOUCH_TTL - 1})), 1)
 
-    def test_privacy_mode_hides_amounts(self):
+    def test_privacy_mode_omits_all_invoice_details(self):
         invoice = self.hydrate([api_invoice(2, "2000.00")])[0]
         visible = doklad.build_notifications([("paid", invoice)], doklad.NOTIFY_FALLBACK, False, "cs")[0][2]
         hidden = doklad.build_notifications([("paid", invoice)], doklad.NOTIFY_FALLBACK, True, "cs")[0][2]
         self.assertIn("2\u00a0420,00", visible)
-        self.assertNotIn("420", hidden)
+        self.assertEqual(hidden, "")
+
+    def test_notification_fallback_never_puts_details_in_process_arguments(self):
+        messages = [("paid", "Faktura zaplacena", "Citlivé číslo faktury")]
+        with patch.object(doklad, "notification_method", return_value=(None, ())):
+            with patch.object(doklad.subprocess, "run") as run:
+                doklad.send_notifications(messages)
+        self.assertEqual(run.call_args.args[0], ["/usr/bin/notify-send", "-a", "Doklad.ai", "--", "Faktura zaplacena"])
 
     def test_notification_burst_is_capped(self):
         invoices = self.hydrate([api_invoice(index, "10.00") for index in range(1, 11)])
@@ -572,6 +580,24 @@ class SecretStorageTests(TempHome):
         self.write_env("DOKLAD_API_KEY=dk_file\n")
         secrets = doklad.load_secrets(self.paths, dict(self.environ, DOKLAD_API_KEY="dk_env"))
         self.assertEqual(secrets["DOKLAD_API_KEY"], "dk_env")
+
+    def test_migration_removes_plaintext_only_after_verified_lookup(self):
+        self.write_env("DOKLAD_API_KEY=dk_old\nDOKLAD_API_KEY=dk_current\nDOKLAD_RELAY_TOKEN=relaytoken\n")
+        with patch.object(doklad, "keyring_call", side_effect=["", ""]):
+            with self.assertRaises(doklad.DokladError):
+                doklad.configure_api_key(self.context(), "", "keyring")
+        self.assertEqual(doklad.read_env_values(self.paths)["DOKLAD_API_KEY"], "dk_current")
+        with patch.object(doklad, "keyring_call", side_effect=["", "dk_current", "dk_current"]) as keyring:
+            doklad.configure_api_key(self.context(), "", "keyring")
+            keyring.assert_any_call("store", "dk_current")
+            self.assertEqual(doklad.load_secrets(self.paths, dict(self.environ, DOKLAD_API_KEY="dk_legacy"))
+                             ["DOKLAD_API_KEY"], "dk_current")
+        values = doklad.read_env_values(self.paths)
+        self.assertNotIn("DOKLAD_API_KEY", values)
+        self.assertEqual(values["DOKLAD_RELAY_TOKEN"], "relaytoken")
+        with patch.object(doklad, "keyring_call", return_value=""):
+            result = doklad.run_snapshot(self.context(), options())
+        self.assertEqual(result["error"], "keyring_unavailable")
 
     def test_group_or_world_readable_env_file_is_refused(self):
         for mode in (0o640, 0o644, 0o604):
@@ -688,6 +714,30 @@ class SnapshotTests(TempHome):
         self.assertTrue(result["hasData"])
         self.assertEqual(result["period"]["invoiced"]["count"], 5)
 
+    def test_changed_key_or_legacy_cache_is_hidden_when_offline(self):
+        self.write_env("DOKLAD_API_KEY=dk_account_a\n")
+        self.serve_dataset()
+        self.assertTrue(doklad.run_snapshot(self.context(), options())["hasData"])
+        self.write_env("DOKLAD_API_KEY=dk_account_b\n")
+        self.transport.on("GET", "/api/invoices", doklad.DokladError("offline"))
+        self.assertFalse(doklad.run_snapshot(self.context(now=NOW + 1), options(cached=True))["hasData"])
+        self.assertEqual(doklad.cached_customers(self.context()), [])
+        doklad.write_json_file(self.paths.cache_file, cache_from([], [], sample_customers()))
+        self.assertFalse(doklad.run_snapshot(self.context(), options())["hasData"])
+
+    def test_rejected_key_cannot_reuse_cache_after_restart(self):
+        self.write_env("DOKLAD_API_KEY=dk_test\n")
+        self.serve_dataset()
+        doklad.run_snapshot(self.context(), options())
+        self.transport.on("GET", "/api/invoices", reply(401))
+        result = doklad.run_snapshot(self.context(), options(force=True))
+        self.assertEqual((result["status"], result["hasData"]), ("unauthorized", False))
+        self.transport.on("GET", "/api/invoices", doklad.DokladError("offline"))
+        self.assertFalse(doklad.run_snapshot(self.context(), options(cached=True))["hasData"])
+        self.assertFalse(doklad.cached_customers(self.context()))
+        self.serve_dataset()
+        self.assertTrue(doklad.run_snapshot(self.context(), options())["hasData"])
+
     def test_invalid_key_without_cache(self):
         self.write_env("DOKLAD_API_KEY=dk_test\n")
         self.transport.on("GET", "/api/invoices", reply(401, {"message": "Unauthorized"}))
@@ -738,20 +788,19 @@ class RelayTests(TempHome):
         self.write_env("DOKLAD_API_KEY=dk_test\nDOKLAD_RELAY_URL=https://hook.example.cz\n"
                        "DOKLAD_RELAY_TOKEN=relaytoken\n")
 
-    def test_signal_forces_refresh_and_is_listed(self):
+    def test_counter_forces_refresh(self):
         self.relay_env()
         self.serve_dataset(invoices=[api_invoice(2, "2000.00")])
         self.transport.on("GET", "/events", reply(200, {"events": [], "cursor": 0}))
         doklad.run_snapshot(self.context(), options())
         fetches = self.transport.count("GET", "/api/invoices")
         self.serve_dataset(invoices=[api_invoice(2, "2000.00", status="paid")])
-        self.transport.on("GET", "/events", reply(200, {"events": [
-            {"seq": 4, "event": "invoice.paid", "resourceId": 2, "receivedAt": NOW + 5}], "cursor": 4}))
+        self.transport.on("GET", "/events", reply(200, {"head": 4}))
         result = doklad.run_snapshot(self.context(now=NOW + 10), options())
         self.assertEqual(self.transport.count("GET", "/api/invoices"), fetches + 1)   # cache was still fresh
         self.assertEqual(len(self.notifications), 1)
-        self.assertEqual(result["events"][0]["event"], "invoice.paid")
-        self.assertEqual(result["events"][0]["number"], "20260002")
+        self.assertNotIn("events", result)
+        self.assertEqual(result["relay"]["lastEventAt"], NOW + 10)
         self.assertTrue(result["relay"]["ok"])
         call = self.transport.last("GET", "/events")
         self.assertEqual(call["headers"]["Authorization"], "Bearer relaytoken")
@@ -777,39 +826,28 @@ class RelayTests(TempHome):
         self.assertEqual(result["relay"]["error"], "relay_unauthorized")
         self.assertFalse(result["relay"]["ok"])
 
-    def test_reset_relay_restarts_the_cursor(self):
-        seen = []
-
-        def transport(method, target, body, headers, max_bytes):
-            seen.append(target)
-            if target.endswith("after=40"):
-                return reply(200, {"events": [], "cursor": 2, "head": 2})
-            return reply(200, {"events": [{"seq": 1, "event": "invoice.paid", "receivedAt": NOW},
-                                          {"seq": 2, "event": "invoice.created", "receivedAt": NOW}],
-                               "cursor": 2, "head": 2})
-
-        events, cursor = doklad.relay_fetch(transport, "", "tok", 40)
-        self.assertEqual(seen, ["/events?after=40", "/events?after=0"])
-        self.assertEqual(([event["seq"] for event in events], cursor), ([1, 2], 2))
-        events, cursor = doklad.relay_fetch(
-            lambda *args: reply(200, {"events": [], "cursor": 40, "head": 40}), "", "tok", 40)
-        self.assertEqual((events, cursor), ([], 40))
+    def test_lower_counter_forces_refresh_after_relay_reset(self):
+        self.relay_env()
+        self.serve_dataset()
+        self.transport.on("GET", "/events", reply(200, {"head": 40}))
+        doklad.run_snapshot(self.context(), options())
+        self.transport.on("GET", "/events", reply(200, {"head": 2}))
+        self.transport.on("GET", "/api/invoices", doklad.DokladError("offline"))
+        doklad.run_snapshot(self.context(now=NOW + 1), options())
+        self.assertEqual(doklad.load_state(self.paths, self.context().account)["relayCursor"], 40)
+        self.serve_dataset()
+        doklad.run_snapshot(self.context(now=NOW + 2), options())
+        self.assertEqual(doklad.load_state(self.paths, self.context().account)["relayCursor"], 2)
 
     def test_relay_without_secrets_is_reported(self):
         with self.assertRaises(doklad.DokladError) as caught:
             doklad.relay_fetch(lambda *args: reply(503), "", "tok", 0)
         self.assertEqual(caught.exception.code, "relay_not_ready")
 
-    def test_malformed_signals_are_dropped(self):
-        events, cursor = doklad.relay_fetch(
-            lambda *args: reply(200, {"events": [
-                {"seq": 2, "event": "invoice.paid", "resourceId": 9, "receivedAt": NOW},
-                {"seq": 3, "event": "<script>", "receivedAt": NOW},
-                {"seq": "4", "event": "invoice.paid", "receivedAt": NOW},
-                {"seq": 1, "event": "invoice.paid", "receivedAt": NOW},
-                "junk"]}), "", "tok", 1)
-        self.assertEqual([event["seq"] for event in events], [2])
-        self.assertEqual(cursor, 2)
+    def test_malformed_counter_is_rejected(self):
+        for value in (True, -1, "3", 2 ** 53, None):
+            with self.assertRaises(doklad.DokladError):
+                doklad.relay_fetch(lambda *args: reply(200, {"head": value}), "", "tok", 0)
 
 
 class ActionTests(TempHome):
@@ -830,7 +868,7 @@ class ActionTests(TempHome):
         self.assertTrue(result["ok"])
         self.assertEqual(self.transport.last("POST", "/api/invoices/12/payments")["payload"],
                          {"amount": "1210.00", "paidAt": "2026-11-18", "paymentMethod": "bank_transfer"})
-        self.assertEqual(doklad.load_state(self.paths)["selfTouched"], {"12": NOW})
+        self.assertEqual(doklad.load_state(self.paths, self.context().account)["selfTouched"], {"12": NOW})
 
     def test_record_payment_validation(self):
         for payload in ({"id": 12, "amount": "0", "paidAt": "2026-11-18"},
@@ -942,11 +980,33 @@ class ActionTests(TempHome):
 
     def test_create_customer_refuses_known_ico(self):
         doklad.ensure_private_dir(self.paths.state_dir)
-        doklad.write_json_file(self.paths.cache_file, cache_from([], [], sample_customers()))
+        cache = cache_from([], [], sample_customers())
+        doklad.write_json_file(self.paths.cache_file, dict(cache, account=self.context().account))
         self.assertEqual(self.run_action("create-customer", {"name": "Acme", "ico": "12345678"})["error"],
                          "customer_exists")
         self.transport.on("POST", "/api/customers", reply(201, {"id": 9}))
         self.assertEqual(self.run_action("create-customer", {"name": "Nov\u00fd", "ico": "11112222"})["id"], 9)
+
+    def test_action_rejects_a_selection_from_another_account(self):
+        result = self.run_action("download-pdf", {"id": 12, "expectedAccount": doklad.key_fingerprint("dk_other")})
+        self.assertEqual(result["error"], "account_changed")
+        self.assertEqual(self.transport.calls, [])
+
+    def test_unauthorized_action_removes_cache(self):
+        self.serve_dataset()
+        doklad.run_snapshot(self.context(), options())
+        self.transport.on("GET", "/api/invoices/12/pdf", reply(401))
+        self.assertEqual(self.run_action("download-pdf", {"id": 12})["error"], "unauthorized")
+        self.assertFalse(os.path.exists(self.paths.cache_file))
+
+    def test_clear_local_data_preserves_exports(self):
+        self.serve_dataset()
+        doklad.run_snapshot(self.context(), options())
+        exported = doklad.save_download(self.context(), "faktura.pdf", b"%PDF-1.7")
+        self.assertTrue(self.run_action("clear-local-data", {})["ok"])
+        self.assertFalse(os.path.exists(self.paths.cache_file))
+        self.assertFalse(os.path.exists(self.paths.state_file))
+        self.assertTrue(os.path.isfile(exported))
 
     def test_download_pdf_checks_content_and_stores_privately(self):
         self.transport.on("GET", "/api/invoices/12/pdf", reply(200, b"%PDF-1.7 fake"))

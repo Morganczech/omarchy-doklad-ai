@@ -2,6 +2,7 @@ import QtQuick
 import QtCore
 import QtQuick.Controls
 import Quickshell
+import Quickshell.Io
 import qs.Commons
 import qs.Commons as Commons
 import qs.Ui
@@ -18,6 +19,22 @@ Panel {
   moduleName: "gruut.doklad-ai"
   ipcTarget: "gruut.doklad-ai"
   manageIpc: false
+
+  readonly property string pluginVersion: {
+    try {
+      var manifest = JSON.parse(manifestFile.text())
+      return typeof manifest.version === "string" ? manifest.version : ""
+    } catch (e) {
+      return ""
+    }
+  }
+
+  FileView {
+    id: manifestFile
+    path: Qt.resolvedUrl("manifest.json")
+    blockLoading: true
+    printErrors: false
+  }
 
   // Czech or Slovak, see Strings.qml.
   Strings {
@@ -236,6 +253,17 @@ Panel {
   Connections {
     target: backend
     function onActionFinished(tag, result) { root.handleResult(tag, result) }
+    function onAccountViewReset() {
+      root.resolveConfirm(false)
+      root.closeDrawer()
+      root.prefillCustomer = null
+      root.invoiceQuery = ""
+      createTab.resetInvoice()
+      createTab.resetExpense()
+      customersTab.resetView()
+      toolsTab.webhooks = []
+      toolsTab.webhooksLoaded = false
+    }
   }
 
   function handleResult(tag, result) {
@@ -266,6 +294,8 @@ Panel {
       notice(strings.t("done.expense"), "ok")
     } else if (tag === "create-customer") {
       notice(strings.t("done.customer").arg(Model.plainText(result.name, 80)), "ok")
+    } else if (tag === "clear-local-data") {
+      notice(strings.t("done.localDataCleared"), "ok")
     } else if (tag === "copy") {
       notice(strings.t("done.copied"), "ok")
     }
@@ -358,6 +388,7 @@ Panel {
   readonly property var allStops: {
     var list = [{ key: "header", rows: 1, cols: 3 }]
     if (bannerAction) list.push({ key: "banner", rows: 1, cols: 1 })
+    if (!snapshot.hasData && snapshot.status !== "loading") list.push({ key: "clear-cache", rows: 1, cols: 1 })
     if (!tabsVisible) return list
     list.push({ key: "tabs", rows: 1, cols: tabNames.length })
     var extra = activeView ? activeView.stops : []
@@ -437,6 +468,8 @@ Panel {
       else openWeb()
     } else if (stopKey === "banner") {
       act("copy", { text: setupCommand }, "copy")
+    } else if (stopKey === "clear-cache") {
+      toolsTab.clearLocalData()
     } else if (stopKey === "tabs") {
       setTab(tabNames[stopCol])
     } else if (activeView) {
@@ -462,6 +495,7 @@ Panel {
   function scrollCursorIntoView() {
     if (!content) return
     if (stopKey === "header" || stopKey === "banner") panelFlick.contentY = 0
+    else if (stopKey === "clear-cache") scrollItemIntoView(clearCacheButton)
     else if (stopKey === "tabs") scrollItemIntoView(content.tabsItem)
     else if (activeView) scrollItemIntoView(activeView.cursorItem(stopKey, stopRow))
   }
@@ -821,6 +855,16 @@ Panel {
                 text: root.strings.t("action.copyCommand")
                 onClicked: root.act("copy", { text: root.setupCommand }, "copy")
               }
+
+              Btn {
+                id: clearCacheButton
+                ctx: root
+                stop: "clear-cache"
+                visible: !root.snapshot.hasData && root.snapshot.status !== "loading"
+                enabled: !root.busy
+                text: root.strings.t("tools.clearLocalData")
+                onClicked: toolsTab.clearLocalData()
+              }
             }
           }
 
@@ -894,12 +938,15 @@ Panel {
             ctx: root
             dim: true
             width: parent.width
-            visible: root.snapshot.hasData
+            visible: root.snapshot.hasData || root.pluginVersion !== ""
             text: {
               var parts = []
-              if (root.busy) parts.push(root.strings.t("footer.working"))
-              else if (root.snapshot.fetchedAt > 0) parts.push(root.strings.t("footer.updated").arg(root.ago(root.snapshot.fetchedAt)))
-              parts.push(root.strings.t("footer.keys"))
+              if (root.pluginVersion !== "") parts.push("v" + root.pluginVersion)
+              if (root.snapshot.hasData) {
+                if (root.busy) parts.push(root.strings.t("footer.working"))
+                else if (root.snapshot.fetchedAt > 0) parts.push(root.strings.t("footer.updated").arg(root.ago(root.snapshot.fetchedAt)))
+                parts.push(root.strings.t("footer.keys"))
+              }
               return parts.join("  \u00b7  ")
             }
             font.pixelSize: Style.font.caption

@@ -73,7 +73,7 @@ test("parseSnapshot sanitizes untrusted fields", () => {
     invoices: [{ id: 1, number: "A<script>", customerName: "B", issueDate: "2026-11-01", dueDate: "2026-11-15",
       status: "sent", state: "pending", kind: "invoice", total: 10, open: 10, currency: "CZK", daysToDue: 0, variableSymbol: "1" }],
     invoiceCounts: { all: 1, unpaid: 1, overdue: 0, paid: 0, draft: 0 },
-    customers: [], customerCount: 0, expensesAvailable: true, truncated: false, events: [],
+    customers: [], customerCount: 0, expensesAvailable: true, truncated: false, account: "",
     relay: { configured: false, ok: false, error: "", checkedAt: 0, lastEventAt: 0, webhookSecretStored: false },
   }))
   assert.equal(snap.invoices[0].number, "A<script>")
